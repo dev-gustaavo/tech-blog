@@ -33,35 +33,45 @@ A partir da posição indicada, o *leader* lê o WAL e envia os dados de forma o
 
 > O modo `standby` indica que é um banco de dados réplica, que recebe dados vindos de um leader e que não aceita escritas diretamente.
 
-> A posição do WAL é um valor crescente, representado em hexadecimal. O 123 é apenas um exemplo.
+> A posição do WAL é um valor crescente, representado em hexadecimal. O 123 mencionado acima é apenas um exemplo.
 
 Todas as operações citadas acontecem enquanto o *leader* continua recebendo escritas, ou seja, a réplica está correndo atrás de algo que continua se movendo. Quando a réplica chega na mesma posição do WAL que o *leader* está, chamamos isso de *catch-up* e então a nova réplica passa a receber os dados praticamente em tempo real, conforme vimos no [artigo anterior](https://medium.com/@gtbarbosa/replica%C3%A7%C3%A3o-s%C3%ADncrona-o-que-ela-garante-e-quanto-custa-single-leader-replication-a25833391423). Tudo isso pressupõe que o *leader* ainda tem o WAL desde a posição do *snapshot*. Mas será que ele tem?
 
 # Lidando Com Limpeza do WAL
 
-Como no [primeiro artigo](https://medium.com/@gtbarbosa/replica%C3%A7%C3%A3o-s%C3%ADncrona-o-que-ela-garante-e-quanto-custa-single-leader-replication-a25833391423), o WAL é um arquivo de *logging* que armazena sequencialmente as operaçẽos de escrita no banco e isso tem um custo. Quanto mais dados retidos, maior o tamanho de ocupação em disco. Por isso, é comum que os bancos de dados, em determinado momento, façam a limpeza do WAL e isso traz um risco associado ao *setup* de uma nova réplica.
+Como vimos no [primeiro artigo](https://medium.com/@gtbarbosa/replica%C3%A7%C3%A3o-s%C3%ADncrona-o-que-ela-garante-e-quanto-custa-single-leader-replication-a25833391423), o WAL é um arquivo de *logging* que armazena sequencialmente as operações de escrita no banco e isso tem um custo. Quanto mais dados retidos, maior o tamanho de ocupação em disco, aumentando a chance de degradar o banco em operação. Por isso, é comum que os bancos de dados, em determinado momento, façam a reciclagem do WAL, a fim de garantir uma operação saudável ao banco de dados. É como se adicionar uma nova réplica fosse um plano secundário ao banco e manter a saúde da operação do banco fosse o plano primário e isso traz um risco associado ao *setup* de uma nova réplica.
 
-Para ambiente menores e menos críticos, este risco diminui, pois o processo de *setup* tende a ser mais rápido e menor, garantindo que tudo aconteça antes da reciclagem do WAL. Mas e se o WAL for reciclado durante o *setup* de uma nova réplica?
+Para ambientes que lidam com baixo volume de escrita, este risco diminui, pois o processo de *setup* tende a ser mais rápido para alcançar a posição do WAL, enquanto ambientes que lidam com alto volume de escrita, tendem a serem mais críticos e suscetíveis a reciclagem do WAL.
 
-## Garantindo a Retenção do WAL
+Mas afinal, o que fazer se o WAL for reciclado durante o *setup* de uma nova réplica?
 
-A solução mais trivial e mais simples é garantir um mínimo de retenção dos *logs*. A retenção é lidada de maneiras diferentes a depender do banco de dados que você esteja trabalhando, por isso, é extremamente importante conferir na documentação oficial. Para efeitos didáticos, abaixo vou deixar dois exemplos (PostgreSQL e MySQL).
+## Garantindo o Mínimo de Retenção do WAL
+
+A solução mais trivial e mais simples é garantir um mínimo de retenção dos *logs*. A retenção funciona de maneiras diferentes a depender do banco de dados que você esteja trabalhando, por isso, é extremamente importante conferir na documentação oficial. Para efeitos didáticos, abaixo vou deixar dois exemplos (PostgreSQL e MySQL).
 
 - **PostgreSQL**: ele trabalha na retenção por tamanho. Na configuração do banco, você consegue determinar o tamanho mínimo de retenção de *logs*;
 
 - **MySQL**: já o MySQL, lida com a retenção por tempo. Na configuração do banco, Você consegue determinar o tempo de retenção dos *logs*.
 
-Desta forma, conseguimos lidar com uma nova réplica, garantindo que ela seja adicionada antes da remoção do WAL.
+Desta forma, conseguimos lidar com uma nova réplica, garantindo que ela seja adicionada antes da reciclagem do WAL.
 
-## Replication Slots
+## Reserva do WAL Ancorada à Réplica
 
-Outra forma de garantir que as réplicas recebam o WAL é configurando um **Replication Slot**. É uma maneira automatizada de reter os *logs* até que as réplicas os tenha recebido.
+Outra forma de minimizar que as réplicas sofram com a reciclagem do WAL, é ancorar a reciclagem ao término da cópia pela nova réplica. Ou seja, determinar que o *log* só pode ser reciclado quando a réplica confirma a leitura. Cada *append only* no WAL recebe um identificador que garante a sequencialidade da operação, então quando ancoramos a reciclagem do WAL na leitura da réplica, basicamente o que acontece é: *"pode reciclar do log XPTO para trás"*.
 
-O *trade-off* mais importante aqui é que o banco pode reter mais *logs* do que o necessário e assim acabar estourando espaço em disco.
+É importante saber que para bancos que se enquadrem no conceito do *ACID*, a disponibilidade será sempre uma prioridade, portanto:
+
+1. Atente-se ao tamanho do WAL e espaço em disco, pois caso ele seja saturado, o WAL poderá ser reciclado;
+2. Se houver alguma indisponibilidade ou falha no processo de *setup* da nova réplica, o ponto de reciclagem fica preso para sempre, podendo também ocasionar a reciclagem forçada do WAL;
+3. Ter uma válvula de escape é importante, evitando gargálos no estado atual do banco. Prefira perder a nova réplica, do que saturar toda sua arquitetura.
+
+Essa prática também funciona diferente a depender do banco que você esteja usando, portanto, consulte a documentação oficial para referências.
 
 ## Arquivamento do WAL
 
-Outra estratégia pode ser, arquivar os *logs*. Isso garante uma cópia fiel dos *logs* reciclados ou removidos pelo banco.
+Já que o ponto importante para garantir a consistência entre todas as réplicas é o WAL, outra estratégia pode ser, arquivar os *logs*. Isso garante que tenhamos uma cópia dos *logs* fora do *node* do banco e caso sejam reciclados, ainda tenhamos da onde restaurar.
+
+Na prática, essa abordagem envolve configurar o banco para que cada *append only* que ocorra, seja armazenado fisicamente em um storage. No processo de *setup* da nova réplica, fazemos a restauração deste storage, garantindo a consistência entre todas as reṕlicas e o novo *follower*.
 
 Esse modelo precisa que, o banco esteja configurado para armazenar os *logs* em um *object storage*. No PostgreSQL por exemplo, você define um `archive_command`, que envia o arquivo para um local seguro. Para que a réplica consiga ler o WAL, você pode definir o `restore_command`.
 
