@@ -41,7 +41,7 @@ Todas as operações citadas acontecem enquanto o *leader* continua recebendo es
 
 Como vimos no [primeiro artigo](https://medium.com/@gtbarbosa/replica%C3%A7%C3%A3o-s%C3%ADncrona-o-que-ela-garante-e-quanto-custa-single-leader-replication-a25833391423), o WAL é um arquivo de *logging* que armazena sequencialmente as operações de escrita no banco e isso tem um custo. Quanto mais dados retidos, maior o tamanho de ocupação em disco, aumentando a chance de degradar o banco em operação. Por isso, é comum que os bancos de dados, em determinado momento, façam a reciclagem do WAL, a fim de garantir uma operação saudável ao banco de dados. É como se adicionar uma nova réplica fosse um plano secundário ao banco e manter a saúde da operação do banco fosse o plano primário e isso traz um risco associado ao *setup* de uma nova réplica.
 
-Para ambientes que lidam com baixo volume de escrita, este risco diminui, pois o processo de *setup* tende a ser mais rápido para alcançar a posição do WAL, enquanto ambientes que lidam com alto volume de escrita, tendem a serem mais críticos e suscetíveis a reciclagem do WAL.
+Para ambientes que lidam com baixo volume de escrita, este risco diminui, pois o processo de *setup* tende a ser mais rápido para alcançar a posição do WAL, enquanto ambientes que lidam com alto volume de escrita, tendem a ser mais críticos e suscetíveis a reciclagem do WAL.
 
 Mas afinal, o que fazer se o WAL for reciclado durante o *setup* de uma nova réplica?
 
@@ -57,7 +57,9 @@ Desta forma, conseguimos lidar com uma nova réplica, garantindo que ela seja ad
 
 ## Reserva do WAL Ancorada à Réplica
 
-Outra forma de minimizar que as réplicas sofram com a reciclagem do WAL, é ancorar a reciclagem ao término da cópia pela nova réplica. Ou seja, determinar que o *log* só pode ser reciclado quando a réplica confirma a leitura. Cada *append only* no WAL recebe um identificador que garante a sequencialidade da operação, então quando ancoramos a reciclagem do WAL na leitura da réplica, basicamente o que acontece é: *"pode reciclar do log XPTO para trás"*.
+Outra forma de minimizar que as réplicas sofram com a reciclagem do WAL, é ancorar a reciclagem ao término da cópia pela nova réplica. Ou seja, determinar que o *log* só pode ser reciclado quando a réplica confirma a leitura.
+
+Cada *append only* no WAL recebe um identificador que garante a sequencialidade das operações, então quando ancoramos a reciclagem do WAL na conclusão da cópia pela réplica, basicamente o que acontece é: *"pode reciclar do log XPTO para trás"*.
 
 É importante saber que para bancos que se enquadrem no conceito do *ACID*, a disponibilidade será sempre uma prioridade, portanto:
 
@@ -71,7 +73,7 @@ Essa prática também funciona diferente a depender do banco que você esteja us
 
 Já que o ponto importante para garantir a consistência entre todas as réplicas é o WAL, outra estratégia pode ser, arquivar os *logs*. Isso garante que tenhamos uma cópia dos *logs* fora do *node* do banco e caso sejam reciclados, ainda tenhamos da onde restaurar.
 
-Na prática, essa abordagem envolve configurar o banco para que cada *append only* que ocorra, seja armazenado fisicamente em um storage. No processo de *setup* da nova réplica, fazemos a restauração deste storage, garantindo a consistência entre todas as reṕlicas e o novo *follower*.
+Na prática, essa abordagem envolve configurar o banco para que cada *append only* que ocorra, seja armazenado fisicamente em um storage, antes que a reciclagem aconteça e somente depois da confirmação que o arquivamento aconteceu efetivamente. No processo de *setup* da nova réplica, fazemos a restauração deste storage, garantindo a consistência entre todas as reṕlicas e o novo *follower*.
 
 Esse modelo precisa que, o banco esteja configurado para armazenar os *logs* em um *object storage*. No PostgreSQL por exemplo, você define um `archive_command`, que envia o arquivo para um local seguro. Para que a réplica consiga ler o WAL, você pode definir o `restore_command`.
 
